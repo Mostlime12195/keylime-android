@@ -95,6 +95,8 @@ class WordResult(
     }
     /** left-context tokens the LM saw (set by the caller from NeuralScorer.lastCtxTokens; -1 = no LM) */
     var ctxTokens: Int = -1
+    /** m3 decision tier of this word (M3Tier): 0 = not an m3 result; SUGGEST changes are underlined, not applied */
+    var m3Tier: Int = 0
     val changed get() = out != slot.typed
     val lmScored get() = !skipped && !cheap
 

@@ -22,6 +22,7 @@ concurrency:
 env:
   MODEL_HOST: https://huggingface.co/MostLime/keylime-m1-preview/resolve/main
   MODEL_HOST_M2: https://huggingface.co/MostLime/keylime-m2-preview/resolve/main
+  MODEL_HOST_M3: https://huggingface.co/MostLime/keylime-m3-preview/resolve/main
 
 jobs:
   build:
@@ -52,6 +53,10 @@ jobs:
           [ -s models/lm_block4.step.int8.ort ] || curl -fsSL --retry 3 -o models/lm_block4.step.int8.ort "https://autocorrect.mostlime.hackclub.app/autocorrect-android/lm_block4.step.int8.ort" || rm -f models/lm_block4.step.int8.ort
           # m2s int4 graph for engine/MemoryTest (chunked scoring parity + peak memory)
           [ -s models/m2s.step.int4m.ort ] || curl -fsSL --retry 3 -o models/m2s.step.int4m.ort "$MODEL_HOST_M2/m2s.step.int4m.ort" || rm -f models/m2s.step.int4m.ort
+          # m3 + m3dict data for engine/M3VectorsTest (the Python test vectors)
+          for f in m3.encoder.int4.onnx m3.decoder.int4.onnx m3_lexicon.tsv m3_symspell.bin m3_ngram.bin; do
+            [ -s "models/$f" ] || curl -fsSL --retry 3 -o "models/$f" "$MODEL_HOST_M3/$f" || rm -f "models/$f"
+          done
           ls -la models
 
       - name: Unit tests (engine parity + app)
@@ -137,6 +142,7 @@ jobs:
           script: |
             ./gradlew --stacktrace :app:connectedDebugAndroidTest || echo "INSTRUMENTED TESTS FAILED" | tee smoke-instrumented-failed.txt
             mkdir -p smoke && cp -r app/build/reports/androidTests smoke/ 2>/dev/null || true
+            adb logcat -d -s AcM3Bench:I | tee smoke/m3bench.txt || true
             ./gradlew --stacktrace :app:assembleDebug
             .github/scripts/smoke.sh app/build/outputs/apk/debug/app-debug.apk
             [ ! -f smoke-instrumented-failed.txt ]

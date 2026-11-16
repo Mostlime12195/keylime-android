@@ -932,7 +932,9 @@ class KeyboardController(
         val ev = if (!config.policy.sensitive) buildEvent(pd, r) else null
         if (fx != null && ev != null && (r.out != pd.typed || fx.lowercase() != pd.typed.lowercase())) { ev["chosen"] = fx; ev["final"] = fx }
         // suggest-only, or an unsure correction with "only auto-correct when confident": mark, never edit
-        val unsure = fx == null && config.confidentOnly && r.out != pd.typed && mg == null && r.margin < CONFIDENT_MARGIN
+        // (m3: its SUGGEST tier is always unsure; AUTO changes carry a large margin)
+        val unsure = fx == null && r.out != pd.typed && mg == null &&
+            ((config.confidentOnly && r.margin < CONFIDENT_MARGIN) || r.m3Tier == dev.mostlime.autocorrect.engine.m3.M3Tier.SUGGEST)
         // a short word that needs 2+ letters changed ("wruff" -> "stuff") is often slang: underline, don't replace,
         // unless the model is very sure
         // (transpositions count as one: "teh" / "hte" are ordinary typos; real words are left to the other rules)

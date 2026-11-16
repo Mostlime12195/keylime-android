@@ -83,17 +83,20 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
             setupPerformance()
             val m = app.store.manifest()
             findPreference<ListPreference>(Prefs.MODEL)?.apply {
-                entries = m.models.map { "${it.label} (${it.downloadBytes / 1_000_000} MB)" }.toTypedArray()
-                entryValues = m.models.map { it.id }.toTypedArray()
-                if (value == null || m.model(value) == null) value = m.default
+                entries = m.picker.map { "${it.label} (${it.downloadBytes / 1_000_000} MB)" }.toTypedArray()
+                entryValues = m.picker.map { it.id }.toTypedArray()
+                if (value != null && m.pickFor(value) != value) value = m.pickFor(value)
+                if (value == null || m.picker.none { it.id == value }) value = m.default
                 setOnPreferenceChangeListener { _, _ -> view?.post { onModelChanged() }; true }
             }
             findPreference<androidx.preference.SwitchPreferenceCompat>(Prefs.BATTERY_SAVER)?.apply {
                 isChecked = app.prefs.batterySaver
-                val lite = app.store.manifest().let { m -> m.model(m.batterySaver) }
+                val lite = app.store.manifest().let { m -> m.model(m.pickFor(m.batterySaver)) }
                 isVisible = lite != null
                 val why = dev.mostlime.autocorrect.Device.reason(requireContext())
-                summary = "Smaller and faster (m1 34M), a bit less accurate." +
+                val name = lite?.label?.substringBefore(" int")?.substringBefore(" (") ?: "m1 34M"
+                title = "Lite model ($name)"
+                summary = "Smaller and faster ($name), a bit less accurate." +
                     if (why != null) " On by default because $why." else ""
                 setOnPreferenceChangeListener { _, _ -> view?.post { onModelChanged() }; true }
             }

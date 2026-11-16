@@ -97,6 +97,13 @@ class KeylimeSpellChecker : SpellCheckerService() {
         }.getOrNull() ?: return emptyList()
         val words = SEG.findAll(text).take(SentenceCheck.MAX_WORDS).toList()
         val out = ArrayList<Pair<SentenceFix, Boolean>>()
+        // m3: one pass over the whole text gives every word's decision
+        EngineHolder.m3?.takeIf { !it.model.closed }?.let { m3 ->
+            val fixes = runCatching {
+                runBlocking { withTimeoutOrNull(WORD_TIMEOUT_MS * 2) { EngineHolder.scope.async { EngineHolder.m3Fixes(app, m3, text) }.await() } }
+            }.getOrNull()
+            if (fixes != null) return fixes.map { it to corr.lex.index.containsKey(it.from.lowercase()) }
+        }
         val req = SentenceReq("", text)
         for (i in words.indices) {
             val w = words[i]

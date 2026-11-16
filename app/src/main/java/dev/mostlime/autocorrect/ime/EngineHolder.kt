@@ -16,6 +16,12 @@ import dev.mostlime.autocorrect.engine.SPTokenizer
 import dev.mostlime.autocorrect.engine.SpatialModel
 import dev.mostlime.autocorrect.engine.StepModel
 import dev.mostlime.autocorrect.engine.SwipeDecoder
+import dev.mostlime.autocorrect.engine.m3.M3CandGen
+import dev.mostlime.autocorrect.engine.m3.M3Dict
+import dev.mostlime.autocorrect.engine.m3.M3Lexicon
+import dev.mostlime.autocorrect.engine.m3.M3Model
+import dev.mostlime.autocorrect.engine.m3.QuantTrigram
+import dev.mostlime.autocorrect.engine.m3.SymSpellIndex
 import dev.mostlime.autocorrect.model.ModelSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -95,6 +101,9 @@ object EngineHolder {
     @Volatile var swipeBuildMs = -1L
     @Volatile var spec: ModelSpec? = null
         private set
+    /** the m3 decoder when the active model is an m3 (models_v2) one; scorer is null then */
+    @Volatile var m3: M3Dict? = null
+        private set
     @Volatile var params: DecodeParams? = null
         private set
     @Volatile var loading = false
@@ -164,11 +173,16 @@ object EngineHolder {
     private suspend fun ensureLoaded(app: App) {
         val want = runCatching { app.store.activeSpec() }.getOrNull() ?: return
         val cur = spec
-        if (cur != null && cur.id == want.id && cur.graph.sha256 == want.graph.sha256 && scorer?.step?.closed == false && sessionThreads == wantThreads(app)) {
+        val alive = if (want.m3 != null) m3?.model?.closed == false else scorer?.step?.closed == false
+        if (cur != null && cur.id == want.id && cur.graph.sha256 == want.graph.sha256 && alive && sessionThreads == wantThreads(app)) {
             withContext(dispatcher) { applyStyle(app) }; return
         }
         if (!app.store.isInstalled(want)) return
         loading = true
+        if (want.m3 != null) {
+            try { loadM3(app, want) } catch (e: Throwable) { lastError = e.toString(); Log.e(TAG, "m3 load failed", e) } finally { loading = false }
+            return
+        }
         try {
             val t0 = App.now()
             val tok = SPTokenizer.fromJson(app.store.file(want.vocab).readText())
@@ -199,6 +213,46 @@ object EngineHolder {
         }
     }
 
+    private fun mmap(f: java.io.File) = RandomAccessFile(f, "r").use { it.channel.map(FileChannel.MapMode.READ_ONLY, 0, it.length()) }
+
+    /** Loader thread: the m3 encoder/decoder sessions + its dictionary data (the lexicon is shared with the corrector). */
+    private suspend fun loadM3(app: App, want: ModelSpec) {
+        val info = want.m3!!
+        val t0 = App.now()
+        val st = app.store
+        val tok = SPTokenizer.fromJson(st.file(info.vocab).readText())
+        val corr = withContext(dispatcher) { ensureLexicon(app) }
+        // m3_lexicon.tsv is the app's bundled lexicon (same words and counts): reuse it unless the download differs
+        val lexText = st.file(info.lexicon).readText()
+        val bundled = app.assets.open("lexicon.tsv").bufferedReader().use { it.readText() }
+        val lex = if (lexText.trimEnd() == bundled.trimEnd()) corr.gen.lex else Lexicon(lexText)
+        val L = M3Lexicon(lex)
+        val gen = M3CandGen(L, SymSpellIndex(mmap(st.file(info.symspell))))
+        val lm = info.ngram?.let { QuantTrigram(mmap(st.file(it))) }
+        val threads = wantThreads(app)
+        val model = M3Model.open(OrtEnvironment.getEnvironment(), mmap(st.file(info.encoder)), mmap(st.file(info.decoder)), threads,
+            info.nKvHeads, info.headDim, info.convKernel, info.dModel)
+        val d = M3Dict(model, tok, L, gen, lm, info.params, info.styleIds, info.maxSrc, info.maxTgt, info.topK, info.tauSplit, info.rareRank, info.eos)
+        withContext(dispatcher) {
+            release()
+            m3 = d
+            sessionThreads = threads
+            spec = want
+            sessionMs = App.now() - t0
+            if (!firstLoadDone) { coldLoadMs = App.now() - App.processStart; firstLoadDone = true }
+            firstInferenceMs = -1.0
+            lastError = null
+            applyStyle(app)
+        }
+        Log.i(TAG, "session ${want.id} ready in $sessionMs ms (m3, cold load $coldLoadMs ms since process start), threads $threads [${DeviceCpu.describe()}]")
+    }
+
+    /** m3: typo fixes of one sentence (suggest-only idle pass, spell checker); engine thread */
+    fun m3Fixes(app: App, m3: M3Dict, sentence: String): List<dev.mostlime.autocorrect.engine.SentenceFix> {
+        val res = m3.correct(sentence, app.prefs.style, app.user.words())
+        return dev.mostlime.autocorrect.engine.m3.M3Ime.sentenceFixes(res, sentence, m3.P).filter { !app.user.has(it.from) }
+    }
+
     /** Style picker -> control token (only for models with supports_style) + that style's decode params. */
     private fun applyStyle(app: App) {
         val s = scorer ?: return
@@ -215,6 +269,8 @@ object EngineHolder {
     fun release() {
         scorer?.step?.close()
         scorer = null
+        m3?.model?.close()
+        m3 = null
         spec = null
     }
 
