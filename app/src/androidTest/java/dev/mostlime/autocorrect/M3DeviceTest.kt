@@ -65,7 +65,7 @@ class M3DeviceTest {
         val man = Manifest.parse(ctx.assets.open("manifest.json").bufferedReader().use { it.readText() })
         val spec = man.model("m3")!!
         val info = spec.m3!!
-        val dir = File(ctx.cacheDir, "m3test").apply { mkdirs() }
+        val dir = App.instance.store.dir   // shared with the EngineHolder test below (one download)
         val ok = spec.files.all { fetch(man.mirrors(spec).first() + it.name, File(dir, it.name), it.size, it.sha256) }
         assumeTrue("m3 files not downloadable", ok)
         fun f(r: dev.mostlime.autocorrect.model.RemoteFile) = File(dir, r.name)
@@ -118,6 +118,45 @@ class M3DeviceTest {
         val rt = Runtime.getRuntime()
         Log.i(TAG, "java heap used ${(rt.totalMemory() - rt.freeMemory()) / 1_000_000} MB, native ${android.os.Debug.getNativeHeapAllocatedSize() / 1_000_000} MB")
         assertTrue("$bad vector mismatches on device", bad == 0)
+    }
+
+    /**
+     * The app path: files installed into the model store, battery saver on (it runs m3), EngineHolder loads m3 and the
+     * sentence pass / word-end mapping give the expected fixes.
+     */
+    @Test fun engineHolderLoadsM3ForBatterySaver() {
+        val app = App.instance
+        val text = ctx.assets.open("manifest.json").bufferedReader().use { it.readText() }
+        File(app.store.dir, "manifest.json").writeText(text)
+        val man = app.store.manifest()
+        val spec = man.model("m3")!!
+        val ok = spec.files.all { r ->
+            val dst = app.store.file(r)
+            fetch(man.mirrors(spec).first() + r.name, dst, r.size, r.sha256).also { if (it) File(app.store.dir, r.name + ".sha256").writeText(r.sha256) }
+        }
+        assumeTrue("m3 files not downloadable", ok)
+        ctx.getSharedPreferences(ctx.packageName + "_preferences", android.content.Context.MODE_PRIVATE).edit()
+            .putBoolean(Prefs.BATTERY_SAVER, true).commit()
+        app.prefs.reload()
+        assertTrue("battery saver must run m3", app.store.activeSpec().id == "m3" && app.store.isInstalled(app.store.activeSpec()))
+        val t0 = System.nanoTime()
+        dev.mostlime.autocorrect.ime.EngineHolder.preload(ctx)
+        while (dev.mostlime.autocorrect.ime.EngineHolder.m3 == null && System.nanoTime() - t0 < 120_000_000_000L) Thread.sleep(200)
+        val m3 = dev.mostlime.autocorrect.ime.EngineHolder.m3
+        assertTrue("m3 not loaded: ${dev.mostlime.autocorrect.ime.EngineHolder.lastError}", m3 != null)
+        Log.i(TAG, "EngineHolder: m3 ready after ${(System.nanoTime() - t0) / 1_000_000} ms, process PSS ${android.os.Debug.getPss() / 1000} MB")
+        val fixes = kotlinx.coroutines.runBlocking(dev.mostlime.autocorrect.ime.EngineHolder.dispatcher) {
+            dev.mostlime.autocorrect.ime.EngineHolder.m3Fixes(app, m3!!, "Thsi is teh best plce in toen")
+        }
+        Log.i(TAG, "sentence fixes: ${fixes.map { it.from + "->" + it.to }}")
+        assertTrue(fixes.any { it.from == "teh" && it.to == "the" })
+        val win = M3Ime.window("I went to teh")
+        val r = kotlinx.coroutines.runBlocking(dev.mostlime.autocorrect.ime.EngineHolder.dispatcher) {
+            M3Ime.wordResult(m3!!.correct(win, "standard", slots = setOf(2, 3)), win, "teh", m3.P, "to")
+        }
+        Log.i(TAG, "word end 'I went to teh': ${r?.out} tier ${r?.m3Tier} in ${"%.0f".format(r?.lmMs ?: -1.0)} ms")
+        assertTrue(r?.out == "the")
+        Log.i(TAG, "PSS with m3 loaded ${android.os.Debug.getPss() / 1000} MB")
     }
 
     companion object { const val TAG = "AcM3Bench" }
