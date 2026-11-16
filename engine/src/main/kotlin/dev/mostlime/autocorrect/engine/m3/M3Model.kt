@@ -104,9 +104,50 @@ class M3Model private constructor(
     }
 
     companion object {
-        /** model files as bytes (mmap): .onnx, optimized at session creation */
-        fun open(env: OrtEnvironment, encoder: ByteBuffer, decoder: ByteBuffer, threads: Int = 2,
-                 nKvHeads: Int = 2, headDim: Int = 64, convKernel: Int = 7, dModel: Int = 512): M3Model {
+        /** MatMulNBits attribute as serialized in the m3 graphs: name "accuracy_level" (field 1) then i = 0 (field 3) */
+        private val ACC_PATTERN = byteArrayOf(0x0a, 0x0e) + "accuracy_level".toByteArray(Charsets.US_ASCII) + byteArrayOf(0x18, 0x00)
+
+        /**
+         * A copy of the graph bytes with every MatMulNBits accuracy_level 0 set to `level` (one byte each, the protobuf
+         * length is unchanged). Level 4 = int8 activations against the int4 weights: the same weights, about 9x faster
+         * per decoder step than level 0 (fp32 dequantization), test vectors made with it (FORMAT.md). Direct buffer: the
+         * graph never sits on the Java heap; it is dropped once the session is created.
+         */
+        fun withAccuracyLevel(src: ByteBuffer, level: Int): ByteBuffer {
+            val n = src.capacity()
+            val out = ByteBuffer.allocateDirect(n)
+            val dup = src.duplicate()
+            (dup as java.nio.Buffer).position(0)
+            out.put(dup)
+            val p = ACC_PATTERN
+            val last = p.size - 1
+            var count = 0
+            var i = 0
+            while (i <= n - p.size) {
+                if (out.get(i) == p[0] && out.get(i + 2) == p[2] && out.get(i + last - 1) == p[last - 1] && out.get(i + last) == p[last]) {
+                    var ok = true
+                    for (j in 1 until last) if (out.get(i + j) != p[j]) { ok = false; break }
+                    if (ok) { out.put(i + last, level.toByte()); count++; i += p.size; continue }
+                }
+                i++
+            }
+            patched = count
+            (out as java.nio.Buffer).position(0)
+            return out
+        }
+
+        /** MatMulNBits nodes patched by the last withAccuracyLevel call (65 encoder, 28 decoder) */
+        @Volatile var patched = 0
+            private set
+
+        /**
+         * model files as bytes (mmap): .onnx, optimized at session creation. accuracyLevel 4 (the default) patches the
+         * MatMulNBits nodes (withAccuracyLevel); 0 runs the graphs as downloaded.
+         */
+        fun open(env: OrtEnvironment, encoder0: ByteBuffer, decoder0: ByteBuffer, threads: Int = 2,
+                 nKvHeads: Int = 2, headDim: Int = 64, convKernel: Int = 7, dModel: Int = 512, accuracyLevel: Int = ACCURACY_LEVEL): M3Model {
+            val encoder = if (accuracyLevel != 0) withAccuracyLevel(encoder0, accuracyLevel) else encoder0
+            val decoder = if (accuracyLevel != 0) withAccuracyLevel(decoder0, accuracyLevel) else decoder0
             fun opts() = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(threads)
                 setInterOpNumThreads(1)
@@ -117,6 +158,8 @@ class M3Model private constructor(
             val d = try { env.createSession(decoder, opts()) } catch (t: Throwable) { e.close(); throw t }
             return M3Model(env, e, d, nKvHeads, headDim, convKernel, dModel)
         }
+
+        const val ACCURACY_LEVEL = 4
 
         /** numpy's float32 pairwise sum (np.sum of a float32 array) */
         fun npSum(a: FloatArray, lo: Int = 0, n: Int = a.size): Float {
