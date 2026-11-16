@@ -77,11 +77,15 @@ class M3DeviceTest {
         val tLex = (System.nanoTime() - t0) / 1e6
         val threads = DeviceCpu.intraOpThreads()
         val t1 = System.nanoTime()
-        val model = M3Model.open(OrtEnvironment.getEnvironment(), mmap(f(info.encoder)), mmap(f(info.decoder)), threads)
+        // int8 (accuracy_level 4) rounds differently on x86 than on ARM and the vectors are ARM-made: x86 emulators check
+        // the decode logic at level 0 against the level-0 vectors, ARM devices check what ships
+        val arm = android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("arm") == true
+        val level = if (arm) M3Model.ACCURACY_LEVEL else 0
+        val model = M3Model.open(OrtEnvironment.getEnvironment(), mmap(f(info.encoder)), mmap(f(info.decoder)), threads, accuracyLevel = level)
         val tSess = (System.nanoTime() - t1) / 1e6
         val C = M3Dict(model, tok, L, gen, lm, info.params)
         Log.i(TAG, "load: data ${"%.0f".format(tLex)} ms, sessions ${"%.0f".format(tSess)} ms, threads $threads [${DeviceCpu.describe()}]")
-        val ref = Json.parseToJsonElement(inst.context.assets.open("m3_test_vectors.json").bufferedReader().use { it.readText() }).jsonObject
+        val ref = Json.parseToJsonElement(inst.context.assets.open(if (arm) "m3_test_vectors.json" else "m3_test_vectors_acc0.json").bufferedReader().use { it.readText() }).jsonObject
         C.correct("warm up the model", "standard")
         var bad = 0
         val msgMs = ArrayList<Double>()
