@@ -43,15 +43,27 @@ class M3VectorsTest {
         cName = p["c_name"]!!.jsonPrimitive.double, cReal = p["c_real"]!!.jsonPrimitive.double, cRare = p["c_rare"]!!.jsonPrimitive.double,
         thAuto = p["th_auto"]!!.jsonPrimitive.double, thSugg = p["th_sugg"]!!.jsonPrimitive.double)
 
-    @Test fun matchesPythonVectors() {
+    /** decode logic: exact parity at accuracy_level 0 (fp32 dequant, same result on every CPU) */
+    @Test fun matchesPythonVectors() = check("m3_test_vectors_acc0.json", 0)
+
+    /**
+     * what ships: accuracy_level 4. The int8 kernels round differently on x86 than on ARM, and the vectors are made on
+     * ARM (the VPS; Mac matches them exactly), so this runs on aarch64 hosts only. Phones are ARM.
+     */
+    @Test fun matchesPythonVectorsAcc4() {
+        assumeTrue("int8 vectors are ARM-made", System.getProperty("os.arch") in setOf("aarch64", "arm64"))
+        check("m3_test_vectors.json", M3Model.ACCURACY_LEVEL)
+    }
+
+    private fun check(fixture: String, level: Int) {
         assumeTrue("no m3 files in AC_MODEL_DIR", dir.isNotEmpty() && names.all { f(it).exists() })
-        val ref = Fixtures.json("m3_test_vectors.json").jsonObject
+        val ref = Fixtures.json(fixture).jsonObject
         val P = params(ref["params"]!!.jsonObject)
         val t0 = System.nanoTime()
         val L = M3Lexicon(Lexicon(f("m3_lexicon.tsv").readText()))
         val gen = M3CandGen(L, SymSpellIndex(mmap(f("m3_symspell.bin"))))
         val lm = QuantTrigram(mmap(f("m3_ngram.bin")))
-        val model = M3Model.open(OrtEnvironment.getEnvironment(), mmap(f("m3.encoder.int4.onnx")), mmap(f("m3.decoder.int4.onnx")), threads = 2)
+        val model = M3Model.open(OrtEnvironment.getEnvironment(), mmap(f("m3.encoder.int4.onnx")), mmap(f("m3.decoder.int4.onnx")), threads = 2, accuracyLevel = level)
         println("m3 load ${(System.nanoTime() - t0) / 1e6} ms")
         val C = M3Dict(model, Fixtures.tokM2, L, gen, lm, P)
         val errs = ArrayList<String>()
