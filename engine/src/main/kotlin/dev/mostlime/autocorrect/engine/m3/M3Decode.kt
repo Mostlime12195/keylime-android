@@ -297,8 +297,13 @@ object M3Decide {
         return o
     }
 
-    /** casual: drop generator alternatives that only add or move apostrophes (im -> i'm) */
-    fun casualFilter(plans: List<M3Plan>): List<M3Plan> = plans.map { p ->
+    /**
+     * casual: drop generator alternatives that only add or move apostrophes (im -> i'm); a typed word that is itself a
+     * casual contraction (CASUAL_OK: dont, im, ...) is no correction site at all (its slot is dropped)
+     */
+    fun casualFilter(plans: List<M3Plan>): List<M3Plan> = plans.filter { p ->
+        '\'' in p.typed || p.typed.lowercase() !in M3Words.CASUAL_OK
+    }.map { p ->
         val t = p.typed.replace("'", "").lowercase()
         M3Plan(p.j, p.typed, p.span, p.outWord, p.nonword, p.prot, p.changed, p.rare, p.low, p.wlp, p.rank, p.nameLike,
             p.alts.filter { it.kind == "copy" || it.kind == "greedy" || it.text.replace("'", "").lowercase() != t })
