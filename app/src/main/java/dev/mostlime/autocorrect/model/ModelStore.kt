@@ -307,7 +307,8 @@ class ModelStore(private val ctx: Context) {
         if (prefs.model.isNotEmpty() && m.model(prefs.model) == null) prefs.model = ""
         // a pick of a model that a models_v2 entry replaced (m1 -> m3) follows the picker slot
         if (prefs.model.isNotEmpty() && m.pickFor(prefs.model) != prefs.model) prefs.model = m.pickFor(prefs.model)
-        val id = if (prefs.batterySaver) m.batterySaver else prefs.model.ifEmpty { m.default }
+        // battery saver: the manifest's battery_saver model (m1 for old apps), or the models_v2 entry that replaces it (m3)
+        val id = if (prefs.batterySaver) m.pickFor(m.batterySaver) else prefs.model.ifEmpty { m.default }
         return m.model(id) ?: m.model(m.default)!!
     }
 

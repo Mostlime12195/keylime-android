@@ -244,7 +244,7 @@ object EngineHolder {
             lastError = null
             applyStyle(app)
         }
-        Log.i(TAG, "m3 ${want.id} ready in $sessionMs ms, threads $threads [${DeviceCpu.describe()}]")
+        Log.i(TAG, "session ${want.id} ready in $sessionMs ms (m3, cold load $coldLoadMs ms since process start), threads $threads [${DeviceCpu.describe()}]")
     }
 
     /** m3: typo fixes of one sentence (suggest-only idle pass, spell checker); engine thread */

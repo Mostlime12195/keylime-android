@@ -72,7 +72,8 @@ class ManifestTest {
         assertEquals("m3", m.pickFor("block4"))
         assertEquals("m2s_int4", m.pickFor("m2s_int4"))
         assertEquals("m2s_int4", m.default)
-        assertEquals("block4", m.batterySaver)
+        assertEquals("block4", m.batterySaver)              // old apps: m1
+        assertEquals("m3", m.pickFor(m.batterySaver))       // new apps: battery saver runs m3
         assertEquals("https://huggingface.co/MostLime/keylime-m3-preview/resolve/main/", m.mirrors(m3).first())
         assertEquals(mapOf("casual" to 256, "standard" to 257, "formal" to 258), info.styleIds)
         assertTrue(info.params.b > 0 && info.params.thSugg < info.params.thAuto)

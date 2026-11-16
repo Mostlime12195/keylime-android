@@ -91,10 +91,12 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
             }
             findPreference<androidx.preference.SwitchPreferenceCompat>(Prefs.BATTERY_SAVER)?.apply {
                 isChecked = app.prefs.batterySaver
-                val lite = app.store.manifest().let { m -> m.model(m.batterySaver) }
+                val lite = app.store.manifest().let { m -> m.model(m.pickFor(m.batterySaver)) }
                 isVisible = lite != null
                 val why = dev.mostlime.autocorrect.Device.reason(requireContext())
-                summary = "Smaller and faster (m1 34M), a bit less accurate." +
+                val name = lite?.label?.substringBefore(" int")?.substringBefore(" (") ?: "m1 34M"
+                title = "Lite model ($name)"
+                summary = "Smaller and faster ($name), a bit less accurate." +
                     if (why != null) " On by default because $why." else ""
                 setOnPreferenceChangeListener { _, _ -> view?.post { onModelChanged() }; true }
             }

@@ -25,7 +25,7 @@
 
     <PreferenceCategory app:title="Model" app:iconSpaceReserved="false">
         <ListPreference app:key="model" app:title="Model" app:useSimpleSummaryProvider="true" app:iconSpaceReserved="false" />
-        <SwitchPreferenceCompat app:key="battery_saver" app:title="Lite model (m1 34M)" app:iconSpaceReserved="false" />
+        <SwitchPreferenceCompat app:key="battery_saver" app:title="Lite model" app:iconSpaceReserved="false" />
         <ListPreference app:key="ort_threads" app:title="Threads" app:persistent="false"
             app:entries="@array/ort_threads" app:entryValues="@array/ort_threads_values" app:useSimpleSummaryProvider="true" app:iconSpaceReserved="false" />
     </PreferenceCategory>
