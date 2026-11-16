@@ -24,6 +24,8 @@ import kotlinx.coroutines.isActive
 import dev.mostlime.autocorrect.engine.SwipeResult
 import dev.mostlime.autocorrect.engine.Touch
 import dev.mostlime.autocorrect.engine.WordResult
+import dev.mostlime.autocorrect.engine.m3.M3Dict
+import dev.mostlime.autocorrect.engine.m3.M3Ime
 import dev.mostlime.autocorrect.log.EventLog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -54,6 +56,12 @@ class AutocorrectIME : InputMethodService(), KeyboardView.Listener {
             val job = EngineHolder.scope.launch {
                 val r = try {
                     val corr = EngineHolder.ensureLexicon(app)
+                    val m3 = EngineHolder.m3?.takeIf { !it.model.closed }
+                    if (m3 != null) {
+                        val r = m3Word(m3, req)
+                        main.post { done(r) }
+                        return@launch
+                    }
                     val sc = EngineHolder.scorer?.takeIf { !it.step.closed }
                     sc?.lastCtxTokens = 0
                     val res = corr.correctWord(req.input, sc, EngineHolder.params ?: DEFAULT_PARAMS, req.prev, merge = req.merge, formal = req.formal,
@@ -102,6 +110,17 @@ class AutocorrectIME : InputMethodService(), KeyboardView.Listener {
             }
         }
 
+        /** m3: the finished word's decision from the current sentence (engine thread) */
+        private fun m3Word(m3: M3Dict, req: CorrectionRequest): WordResult? {
+            val w = req.input
+            if (app.user.has(w.typed)) return null
+            val win = M3Ime.window(w.left + w.sep + w.typed)
+            // only the finished word and the one before it are acted on: rescore just those two slots
+            val n = dev.mostlime.autocorrect.engine.m3.M3Words.SEG.findAll(win).count()
+            val res = m3.correct(win, app.prefs.style, app.user.words(), slots = setOf(n - 2, n - 1))
+            return M3Ime.wordResult(res, win, w.typed, m3.P, req.prev?.let { it.slot.cands[it.idx] })
+        }
+
         private var idleJob: Job? = null
 
         override fun cancelIdle() { idleJob?.cancel(); idleJob = null }
@@ -111,7 +130,14 @@ class AutocorrectIME : InputMethodService(), KeyboardView.Listener {
             idleJob = EngineHolder.scope.launch(start = kotlinx.coroutines.CoroutineStart.ATOMIC) {
                 val sc = EngineHolder.scorer?.takeIf { !it.step.closed }
                 val corr = EngineHolder.corrector
-                val out = if (sc == null || corr == null) null else runCatching {
+                val m3 = EngineHolder.m3?.takeIf { !it.model.closed }
+                val out = if (m3 != null) runCatching {
+                    val t0 = App.now()
+                    val r = reqs.map { req -> if (!isActive) return@runCatching null; EngineHolder.m3Fixes(app, m3, req.sentence) }
+                    Log.i(TAG, "m3 sentence check: ${reqs.size} sentences in ${App.now() - t0} ms")
+                    PerfStats.pass(App.now() - t0, this@AutocorrectIME)
+                    r
+                }.getOrNull() else if (sc == null || corr == null) null else runCatching {
                     val t0 = App.now()
                     val r = reqs.map { req -> if (!isActive) return@runCatching null
                         SentenceCheck.check(corr, req, sc, EngineHolder.params ?: DEFAULT_PARAMS, KeyboardController.FLAG_MARGIN) { !isActive } }

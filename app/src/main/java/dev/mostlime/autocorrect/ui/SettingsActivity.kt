@@ -83,9 +83,10 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
             setupPerformance()
             val m = app.store.manifest()
             findPreference<ListPreference>(Prefs.MODEL)?.apply {
-                entries = m.models.map { "${it.label} (${it.downloadBytes / 1_000_000} MB)" }.toTypedArray()
-                entryValues = m.models.map { it.id }.toTypedArray()
-                if (value == null || m.model(value) == null) value = m.default
+                entries = m.picker.map { "${it.label} (${it.downloadBytes / 1_000_000} MB)" }.toTypedArray()
+                entryValues = m.picker.map { it.id }.toTypedArray()
+                if (value != null && m.pickFor(value) != value) value = m.pickFor(value)
+                if (value == null || m.picker.none { it.id == value }) value = m.default
                 setOnPreferenceChangeListener { _, _ -> view?.post { onModelChanged() }; true }
             }
             findPreference<androidx.preference.SwitchPreferenceCompat>(Prefs.BATTERY_SAVER)?.apply {

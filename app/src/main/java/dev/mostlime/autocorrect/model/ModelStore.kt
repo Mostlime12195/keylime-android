@@ -5,6 +5,7 @@ import android.util.Log
 import dev.mostlime.autocorrect.App
 import dev.mostlime.autocorrect.engine.DecodeParams
 import dev.mostlime.autocorrect.engine.StepMeta
+import dev.mostlime.autocorrect.engine.m3.M3Params
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -44,6 +45,10 @@ class ModelSpec(
     val penFormal: Map<String, Double> = emptyMap(),
     /** this model's own mirrors (e.g. its Hugging Face repo, then Nest); tried before the manifest's top-level base_urls */
     val baseUrls: List<String> = emptyList(),
+    /** an m3 (encoder-decoder + dictionary decode) model from "models_v2"; null for the step-graph LMs */
+    val m3: M3Info? = null,
+    /** id of the "models" entry this one takes the place of in the picker (models_v2 "replaces") */
+    val replaces: String? = null,
 ) {
     fun styleToken(style: String): Int? = if (supportsStyle) styleTokens[style] else null
     fun paramsFor(style: String): DecodeParams {
@@ -51,12 +56,44 @@ class ModelSpec(
         return if (style == "formal" && penFormal.isNotEmpty()) base.copy(pen = penFormal) else base
     }
 
-    val files get() = listOf(graph, vocab)
+    val files get() = m3?.files ?: listOf(graph, vocab)
     val downloadBytes get() = files.sumOf { it.size }
+}
+
+/**
+ * An m3 model (manifest "models_v2", type "m3dict"): encoder + decoder ONNX, tokenizer, lexicon, SymSpell index and the
+ * quantized trigram (keylime-m3-preview FORMAT.md), the model config and the m3dict decision params.
+ */
+class M3Info(
+    val encoder: RemoteFile, val decoder: RemoteFile, val vocab: RemoteFile, val lexicon: RemoteFile, val symspell: RemoteFile,
+    val ngram: RemoteFile?,
+    val nKvHeads: Int, val headDim: Int, val convKernel: Int, val dModel: Int,
+    val styleIds: Map<String, Int>, val eos: Int, val maxSrc: Int, val maxTgt: Int,
+    val topK: Int, val tauSplit: Double, val rareRank: Int,
+    val params: M3Params,
+) {
+    val files get() = listOfNotNull(encoder, decoder, vocab, lexicon, symspell, ngram)
 }
 
 class Manifest(val schema: Int, val updated: String, val baseUrls: List<String>, val default: String, val batterySaver: String, val models: List<ModelSpec>) {
     fun model(id: String) = models.firstOrNull { it.id == id }
+
+    /** the "models" entry id -> the models_v2 entry that takes its place in the picker */
+    private val replacedBy: Map<String, ModelSpec> = models.filter { it.replaces != null }.associateBy { it.replaces!! }
+
+    /**
+     * The model picker: "models" in order, a replaced entry (m1) swapped for its models_v2 replacement (m3); models_v2
+     * entries without a target go at the end. Replaced entries stay in [models] (battery saver, old picks).
+     */
+    val picker: List<ModelSpec> get() {
+        val out = ArrayList<ModelSpec>()
+        for (m in models) if (m.replaces == null) out.add(replacedBy[m.id] ?: m)
+        for (m in models) if (m.replaces != null && out.none { it.id == m.id }) out.add(m)
+        return out
+    }
+
+    /** a saved pick of a replaced model maps to its replacement */
+    fun pickFor(id: String): String = replacedBy[id]?.id ?: id
 
     /** Mirrors for a model's files, in the order they're tried: the model's own base_urls, then the top-level ones. */
     fun mirrors(spec: ModelSpec): List<String> = (spec.baseUrls + baseUrls).filter { it.isNotBlank() }.distinct()
@@ -98,6 +135,8 @@ class Manifest(val schema: Int, val updated: String, val baseUrls: List<String>,
                     baseUrls = m["base_urls"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
                 )
             }
+            // models_v2: entries old apps never read (they parse every "models" entry strictly); unknown types are skipped
+            val v2 = o["models_v2"]?.jsonArray?.mapNotNull { e -> runCatching { parseV2(e.jsonObject, ::file) }.getOrNull() } ?: emptyList()
             return Manifest(
                 schema = o["schema"]!!.jsonPrimitive.int,
                 updated = o["updated"]?.jsonPrimitive?.content ?: "",
@@ -105,7 +144,38 @@ class Manifest(val schema: Int, val updated: String, val baseUrls: List<String>,
                 baseUrls = o["base_urls"]?.jsonArray?.map { it.jsonPrimitive.content } ?: listOf(o["base_url"]!!.jsonPrimitive.content),
                 default = o["default"]!!.jsonPrimitive.content,
                 batterySaver = o["battery_saver"]?.jsonPrimitive?.content ?: o["default"]!!.jsonPrimitive.content,
-                models = models,
+                models = models + v2.filter { n -> models.none { it.id == n.id } },
+            )
+        }
+
+        private val NO_META = StepMeta(0, 0, 0, 0, emptyList())
+
+        private fun parseV2(m: JsonObject, file: (JsonObject) -> RemoteFile): ModelSpec? {
+            if (m["type"]?.jsonPrimitive?.content != "m3dict") return null
+            val f = m["files"]!!.jsonObject
+            val c = m["m3"]!!.jsonObject
+            val d = m["decoder"]?.jsonObject
+            val p = m["params"]!!.jsonObject
+            fun pd(k: String) = p[k]!!.jsonPrimitive.double
+            val info = M3Info(
+                encoder = file(f["encoder"]!!.jsonObject), decoder = file(f["decoder"]!!.jsonObject), vocab = file(f["vocab"]!!.jsonObject),
+                lexicon = file(f["lexicon"]!!.jsonObject), symspell = file(f["symspell"]!!.jsonObject), ngram = f["ngram"]?.jsonObject?.let(file),
+                nKvHeads = c["n_kv_heads"]!!.jsonPrimitive.int, headDim = c["head_dim"]!!.jsonPrimitive.int,
+                convKernel = c["conv_kernel"]!!.jsonPrimitive.int, dModel = c["d_model"]!!.jsonPrimitive.int,
+                styleIds = c["style_ids"]!!.jsonObject.mapValues { it.value.jsonPrimitive.int },
+                eos = c["eos"]?.jsonPrimitive?.int ?: 2, maxSrc = c["max_src"]?.jsonPrimitive?.int ?: 384, maxTgt = c["max_tgt"]?.jsonPrimitive?.int ?: 112,
+                topK = d?.get("top_k")?.jsonPrimitive?.int ?: 8, tauSplit = d?.get("tau_split")?.jsonPrimitive?.double ?: 4.0,
+                rareRank = d?.get("rare_rank")?.jsonPrimitive?.int ?: 10000,
+                params = M3Params(k = p["k"]!!.jsonPrimitive.int, rare = pd("rare"), lowconf = pd("lowconf"), a = pd("a"), b = pd("b"), d = pd("d"),
+                    cName = pd("c_name"), cReal = pd("c_real"), cRare = pd("c_rare"), thAuto = pd("th_auto"), thSugg = pd("th_sugg")),
+            )
+            return ModelSpec(
+                id = m["id"]!!.jsonPrimitive.content, label = m["label"]!!.jsonPrimitive.content,
+                graph = info.encoder, vocab = info.vocab, format = "onnx", sessionConfig = emptyMap(), meta = NO_META,
+                params = DecodeParams(lam = 0.0, bias = 0.0), supportsStyle = m["supports_style"]?.jsonPrimitive?.booleanOrNull ?: true,
+                styleTokens = emptyMap(), styleParams = emptyMap(),
+                baseUrls = m["base_urls"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+                m3 = info, replaces = m["replaces"]?.jsonPrimitive?.content,
             )
         }
     }
@@ -235,6 +305,8 @@ class ModelStore(private val ctx: Context) {
         val prefs = App.instance.prefs
         // a saved pick the manifest no longer has (m2_int4 / int8 ...) is cleared: the default takes over
         if (prefs.model.isNotEmpty() && m.model(prefs.model) == null) prefs.model = ""
+        // a pick of a model that a models_v2 entry replaced (m1 -> m3) follows the picker slot
+        if (prefs.model.isNotEmpty() && m.pickFor(prefs.model) != prefs.model) prefs.model = m.pickFor(prefs.model)
         val id = if (prefs.batterySaver) m.batterySaver else prefs.model.ifEmpty { m.default }
         return m.model(id) ?: m.model(m.default)!!
     }

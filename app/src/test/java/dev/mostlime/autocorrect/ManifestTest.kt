@@ -10,6 +10,10 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class ManifestTest {
     private val nest = "https://autocorrect.mostlime.hackclub.app/autocorrect-android/"
@@ -54,6 +58,39 @@ class ManifestTest {
         assertEquals("m2s_int4", m.default)
         assertEquals("block4", m.batterySaver)
         for (spec in m.models) for (u in m.mirrors(spec)) assertFalse("$u still points at GitHub", "github.com" in u)
+    }
+
+    /** m3 lives in models_v2: shown in m1's picker slot, m2 stays the default, m1 stays for battery saver / old apps */
+    @Test fun m3InModelsV2() {
+        val m = bundled()
+        val m3 = m.model("m3")!!
+        val info = m3.m3!!
+        assertEquals("block4", m3.replaces)
+        assertEquals(listOf("m3.encoder.int4.onnx", "m3.decoder.int4.onnx", "vocab_m3.json", "m3_lexicon.tsv", "m3_symspell.bin", "m3_ngram.bin"),
+            m3.files.map { it.name })
+        assertEquals(listOf("m2s_int4", "m3"), m.picker.map { it.id })
+        assertEquals("m3", m.pickFor("block4"))
+        assertEquals("m2s_int4", m.pickFor("m2s_int4"))
+        assertEquals("m2s_int4", m.default)
+        assertEquals("block4", m.batterySaver)
+        assertEquals("https://huggingface.co/MostLime/keylime-m3-preview/resolve/main/", m.mirrors(m3).first())
+        assertEquals(mapOf("casual" to 256, "standard" to 257, "formal" to 258), info.styleIds)
+        assertTrue(info.params.b > 0 && info.params.thSugg < info.params.thAuto)
+    }
+
+    /** what released apps (Android <= 0.1.118, Mac <= 0.2.16) read: "models" only, every entry a full step-graph entry */
+    @Test fun oldAppsSeeOnlyTheirModels() {
+        val f = listOf("src/main/assets/manifest.json", "app/src/main/assets/manifest.json").map(::File).first { it.exists() }
+        val o = Json.parseToJsonElement(f.readText()).jsonObject
+        val models = o["models"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("m2s_int4", "block4"), models.map { it["id"]!!.jsonPrimitive.content })
+        for (e in models) for (k in listOf("graph", "vocab", "meta", "params", "label")) assertTrue("$k in ${e["id"]}", e.containsKey(k))
+    }
+
+    @Test fun unknownModelsV2TypeIsSkipped() {
+        val m = Manifest.parse(json("", "\"base_urls\": [\"https://nest/\"], \"models_v2\": [{\"id\": \"z\", \"type\": \"future\", \"label\": \"Z\"}],"))
+        assertEquals(listOf("a"), m.models.map { it.id })
+        assertEquals(listOf("a"), m.picker.map { it.id })
     }
 
     @Test fun manifestComesFromNestFirst() {
